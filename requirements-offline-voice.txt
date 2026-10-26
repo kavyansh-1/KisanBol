@@ -1,0 +1,2 @@
+# Optional: speech recognition without a Gnani key (runs on this computer, one-time model download)
+faster-whisper
