@@ -123,3 +123,17 @@ MIT
 - **No model names or workflow in the interface.** Technical detail stays in this README and the code.
 - **Voice without a key (optional):** `pip install -r requirements-offline-voice.txt` enables offline recognition on your computer. Not tested in the build sandbox (model download was blocked), so try it once on your machine.
 - Tests: `python -m pytest -q` (35 offline tests, including real audio/video conversion).
+
+## Farm assistant
+
+A chat panel at the bottom of the page answers farming questions in the selected language.
+
+- **Farming only.** Off-topic questions get a polite redirect.
+- **Grounded.** Price, rain chance and the sell/hold call come from the live result, never guessed. "Explain everything simply" gives a plain summary plus three things to do now.
+- **Safe.** It never gives pesticide doses, MSP figures or subsidy amounts; it points to the Krishi Vigyan Kendra, the Kisan Call Centre (1800-180-1551) or the bank instead.
+- **Works without any model** (built-in guide: storage, rain, irrigation, fertiliser, pests, seeds, MSP, loans, insurance, transport, quality). Set `EVON_BASE_URL` and open questions are also answered by the model, under the same rules.
+- Spoken replies use the text-to-speech key when one is set.
+
+## Keys
+
+Put keys in `.env` (copy `.env.example`): `GNANI_STT_KEY` for speech-to-text, `GNANI_TTS_KEY` for text-to-speech, or one `GNANI_API_KEY` that works for both. Never commit `.env`.

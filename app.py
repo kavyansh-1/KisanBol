@@ -9,6 +9,7 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
+import advisor
 import audio_utils
 import i18n
 import indic
@@ -25,7 +26,7 @@ VERDICT_KEY = {"SELL NOW": ("v-sell", "verdict.sell"), "HOLD": ("v-hold", "verdi
 SCENARIOS = {"live": None, "rain": "rainy", "clear": "clear"}
 INK, AMBER, RED, GREEN = "#14213D", "#FFB703", "#C62828", "#2E7D4F"
 for key, default in (("history", []), ("context", None), ("result", None), ("error", None), ("lang", "en-IN"),
-                     ("res_lang", None), ("fresh", False)):
+                     ("res_lang", None), ("fresh", False), ("chat", []), ("chat_q", "")):
     st.session_state.setdefault(key, default)
 
 
@@ -64,7 +65,7 @@ def money(n: int) -> str:
 
 def run(text=None, audio=None, name="query.wav", speak=None, fresh=True):
     """Run the engine once and keep everything needed to redraw the answer in any language."""
-    speak = engine.gnani_configured() if speak is None else speak
+    speak = engine.gnani_configured("tts") if speak is None else speak
     try:
         with st.spinner(T("thinking")):
             res = engine.run_pipeline(audio=audio, text=text, language=lang, filename=name, speak=speak,
@@ -280,6 +281,73 @@ if res:
         with st.expander(T("notes.title", n=len(notes))):
             for line in notes:
                 st.write("• " + line)
+
+
+# ---------------------------------------------------------------- farm assistant
+def _spoken(text: str) -> str:
+    return re.sub(r"[*#]|^\d+\.\s*", "", text, flags=re.M)
+
+
+def _turn_reply(turn: dict, cl: str, history: list) -> "advisor.Reply":
+    """The assistant's answer for one turn in language `cl`. Cached per language, so switching language redraws the chat."""
+    res = st.session_state.get("result")
+    key = (cl, id(res))
+    if key not in turn["replies"]:
+        flat = []
+        for prev in history:  # earlier turns as plain messages, for follow-up questions and the optional model
+            r_ = prev["replies"].get(key) or next(iter(prev["replies"].values()), None)
+            flat.append({"role": "user", "text": prev["q"] or T("chat.explain")})
+            if r_:
+                flat.append({"role": "bot", "text": r_.text, "topic": r_.topic})
+        turn["replies"][key] = (advisor.explain(res, cl) if turn["explain"]
+                                else advisor.reply(turn["q"], cl, res, flat))
+    return turn["replies"][key]
+
+
+def chat_ask(question: str | None = None, explain: bool = False) -> None:
+    """Callback: add one question (or an 'explain everything' request) to the conversation."""
+    cl = st.session_state["lang"]
+    q = (question if question is not None else st.session_state.get("chat_q", "")).strip()
+    if not q and not explain:
+        return
+    chat = st.session_state["chat"]
+    for t_ in chat:
+        t_["audio"] = None  # only the newest answer keeps its audio
+    turn = {"q": q, "explain": explain, "replies": {}, "audio": None}
+    rep = _turn_reply(turn, cl, chat)
+    if engine.gnani_configured("tts") and rep.topic != "refused":
+        try:
+            turn["audio"] = engine.synthesize(_spoken(rep.text)[:900], cl)
+        except Exception:
+            pass
+    chat.append(turn)
+    st.session_state["chat_q"] = ""
+
+
+def chat_clear() -> None:
+    st.session_state["chat"] = []
+
+
+with st.container(border=True, key="assistant"):
+    H(f'<h3 style="margin:0">{esc(T("chat.title"))}</h3><p class="sub" style="margin:0 0 .5rem">{esc(T("chat.sub"))}</p>')
+    st.button("💡 " + T("chat.explain"), key="chat_explain", on_click=chat_ask, kwargs={"explain": True}, use_container_width=True)
+    H(f'<p class="sub" style="margin:.4rem 0 .2rem">{esc(T("chat.hint"))}</p>')
+    cc = st.columns(3)
+    for i, col in enumerate(cc, start=1):
+        col.button(T(f"chat.q{i}"), key=f"chat_q_btn{i}", on_click=chat_ask, kwargs={"question": T(f"chat.q{i}")}, use_container_width=True)
+    for n, turn in enumerate(st.session_state["chat"]):
+        rep = _turn_reply(turn, lang, st.session_state["chat"][:n])
+        with st.chat_message("user", avatar="🧑‍🌾"):
+            st.markdown(T("chat.explain") if turn["explain"] else turn["q"])
+        with st.chat_message("assistant", avatar="🌾"):
+            st.markdown(rep.text)
+            if turn.get("audio") and n == len(st.session_state["chat"]) - 1 and turn["replies"].get((lang, id(st.session_state.get("result")))):
+                st.audio(turn["audio"], format="audio/wav")
+    with st.form("chat_form", clear_on_submit=False, border=False):
+        st.text_input(T("chat.send"), key="chat_q", placeholder=T("chat.placeholder"), label_visibility="collapsed")
+        f1, f2 = st.columns([3, 1])
+        f1.form_submit_button(T("chat.send"), on_click=chat_ask, use_container_width=True, type="primary")
+        f2.form_submit_button(T("chat.clear"), on_click=chat_clear, use_container_width=True)
 
 if st.session_state["history"]:
     with st.expander(T("hist.title", n=len(st.session_state["history"]))):

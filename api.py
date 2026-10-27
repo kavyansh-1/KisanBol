@@ -20,7 +20,7 @@ async def ask(audio: UploadFile | None = File(None), text: str | None = Form(Non
               language: str = Form("auto"), speak: bool = Form(True), weather_scenario: str | None = Form(None)):
     data = await audio.read() if audio else None
     try:
-        res = engine.run_pipeline(audio=data, text=text, language=language, speak=speak and engine.gnani_configured(),
+        res = engine.run_pipeline(audio=data, text=text, language=language, speak=speak and engine.gnani_configured("tts"),
                                   filename=audio.filename if audio else "query.wav", weather_scenario=weather_scenario)
     except engine.KisanBolError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

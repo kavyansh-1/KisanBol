@@ -242,20 +242,25 @@ def _has(alias: str, text: str) -> bool:
     return alias in text
 
 
-def _auth_headers() -> dict:
-    key = os.getenv("GNANI_API_KEY", "")
+def _key_for(service: str) -> str:
+    """service: 'stt' or 'tts'. A dedicated key wins; GNANI_API_KEY works for both."""
+    return os.getenv(f"GNANI_{service.upper()}_KEY", "") or os.getenv("GNANI_API_KEY", "")
+
+
+def _auth_headers(service: str = "stt") -> dict:
+    key = _key_for(service)
     if not key:
         raise KisanBolError("no_key")
     return {"X-API-Key-ID": key}
 
 
-def gnani_configured() -> bool:
-    return bool(os.getenv("GNANI_API_KEY"))
+def gnani_configured(service: str = "stt") -> bool:
+    return bool(_key_for(service))
 
 
 def voice_ready() -> bool:
     """True when a recording can be turned into text: hosted speech service, or the optional offline recognizer."""
-    return gnani_configured() or audio_utils.local_stt_available()
+    return gnani_configured("stt") or audio_utils.local_stt_available()
 
 
 def evon_configured() -> bool:
@@ -286,7 +291,7 @@ def transcribe(audio: bytes, filename: str = "query.wav", language: str = "hi-IN
         wav = audio_utils.to_wav16k(audio, filename)
     except audio_utils.AudioError as exc:
         raise KisanBolError(exc.key, **exc.params) from exc
-    if not gnani_configured():
+    if not gnani_configured("stt"):
         if not audio_utils.local_stt_available():
             raise KisanBolError("no_stt")
         try:
@@ -299,7 +304,7 @@ def transcribe(audio: bytes, filename: str = "query.wav", language: str = "hi-IN
     form = {"language_code": language, "preferred_language": language,
             "format": "transcribe", "itn_native_numerals": "false"}
     try:
-        resp = requests.post(GNANI_BASE_URL + STT_PATH, headers=_auth_headers(), data=form,
+        resp = requests.post(GNANI_BASE_URL + STT_PATH, headers=_auth_headers("stt"), data=form,
                              files={"audio_file": ("query.wav", wav, "audio/wav")}, timeout=HTTP_TIMEOUT)
     except requests.RequestException as exc:
         raise KisanBolError("stt_service", detail=str(exc)[:120]) from exc
@@ -693,7 +698,7 @@ def synthesize(text: str, language: str = "hi-IN") -> bytes:
     body = {"model": TTS_MODEL, "voice": TTS_VOICE, "language": language, "text": spoken,
             "sample_rate": TTS_SAMPLE_RATE, "container": "wav", "encoding": "linear_pcm"}
     try:
-        resp = requests.post(GNANI_BASE_URL + TTS_PATH, headers={**_auth_headers(), "Content-Type": "application/json"},
+        resp = requests.post(GNANI_BASE_URL + TTS_PATH, headers={**_auth_headers("tts"), "Content-Type": "application/json"},
                              json=body, timeout=HTTP_TIMEOUT)
     except requests.RequestException as exc:
         raise KisanBolError("tts_service", detail=str(exc)[:120]) from exc
