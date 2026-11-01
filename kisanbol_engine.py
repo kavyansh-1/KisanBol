@@ -33,13 +33,19 @@ load_dotenv()
 GNANI_BASE_URL = os.getenv("GNANI_BASE_URL", "https://api.vachana.ai")
 STT_PATH, TTS_PATH = "/stt/v3", "/api/v1/tts/inference"
 TTS_MODEL = os.getenv("TTS_MODEL", "timbre-v2.5")
-TTS_VOICE = os.getenv("TTS_VOICE", "Nalini")
+# Timbre v2.5 voices are tied to one language each, so the voice follows the language.
+TTS_VOICES = {"hi-IN": "Nalini", "en-IN": "Kaveri", "pa-IN": "Mehuli", "mr-IN": "Zahira", "gu-IN": "Falak",
+              "bn-IN": "Kirra", "ta-IN": "Asmita", "te-IN": "Suhana", "kn-IN": "Saanvi", "ml-IN": "Reshma"}
 TTS_SAMPLE_RATE = int(os.getenv("TTS_SAMPLE_RATE", "22050"))
 ENABLE_TTS_TAGS = os.getenv("ENABLE_TTS_TAGS", "false").lower() == "true"
 
 EVON_BASE_URL = os.getenv("EVON_BASE_URL", "").rstrip("/")
 EVON_MODEL = os.getenv("EVON_MODEL", "gnani/gnani-evon-v3.3-30B-A3B")
 EVON_API_KEY = os.getenv("EVON_API_KEY", "EMPTY")
+
+ACCUWEATHER_API_KEY = os.getenv("ACCUWEATHER_API_KEY", "")
+ACCU_BASE = "https://dataservice.accuweather.com"
+DEFAULT_HORIZON = 3  # days of rain forecast used for the sell/hold call unless the farmer asks for another number
 
 AGMARKNET_API_KEY = os.getenv("DATA_GOV_IN_API_KEY", "")
 AGMARKNET_RESOURCE_ID = os.getenv("AGMARKNET_RESOURCE_ID", "9ef84268-d588-465a-a308-a864a43d0070")
@@ -87,8 +93,9 @@ class Note:
 class Entities:
     crop: str | None = None
     mandi: str | None = None
-    intent: str = "sell_or_hold"
+    intent: str = "sell_or_hold"  # sell_or_hold | price_check | forecast
     quantity: float | None = None  # quintals
+    days: int | None = None  # forecast horizon the farmer asked for ("in 5 days")
 
 
 @dataclass
@@ -106,7 +113,11 @@ class MarketPrice:
 class Weather:
     daily: list[dict]  # [{"date", "rain_prob", "rain_mm", "tmax"}]
     max_rain_prob: int
-    source: str = "open-meteo"  # or "scenario"
+    source: str = "open-meteo"  # "accuweather", "open-meteo" or "scenario"
+
+    def first(self, n: int) -> "Weather":
+        days = self.daily[:max(1, n)]
+        return Weather(days, max(d["rain_prob"] for d in days), self.source)
 
 
 @dataclass
@@ -117,6 +128,7 @@ class Verdict:
     code: str = "no_entities"  # sell | hold | no_weather | no_entities
     rain: int = 0
     threshold: int = 70
+    days: int = 3  # how many forecast days the call is based on
 
 
 @dataclass
@@ -131,6 +143,8 @@ class Insights:
     quantity: float | None = None
     revenue: int | None = None
     signals: list[dict] = field(default_factory=list)  # [{"tone": "red|green|amber|grey", "text": ...}]
+    days_requested: int | None = None  # what the farmer asked for
+    days_available: int = 0  # what the forecast provider can give
 
 
 @dataclass
@@ -145,6 +159,7 @@ class KisanBolResult:
     audio: bytes | None
     language: str  # reply language actually used
     needs_clarification: bool = False
+    general: dict | None = None  # {"text", "topic"}: a farming question that is not about today's price
     used_context: list[str] = field(default_factory=list)
     warnings: list = field(default_factory=list)
     timings: dict = field(default_factory=dict)
@@ -156,7 +171,7 @@ class KisanBolResult:
                          "source": self.weather.source} if self.weather else None,
              "verdict": self.verdict.__dict__, "insights": self.insights.__dict__,
              "advice_text": self.advice_text, "language": self.language,
-             "needs_clarification": self.needs_clarification, "used_context": self.used_context,
+             "needs_clarification": self.needs_clarification, "general": self.general, "used_context": self.used_context,
              "warnings": [str(w) for w in self.warnings], "timings": self.timings}
         if include_audio and self.audio:
             d["audio_base64"] = base64.b64encode(self.audio).decode()
@@ -214,6 +229,7 @@ MANDI_COORDS = {k: (v[1], v[2]) for k, v in MANDIS.items()}
 DEMO_PRICES = {"wheat": 2275, "paddy": 2320, "rice": 3400, "maize": 2090, "mustard": 5650,
                "cotton": 7121, "potato": 1450, "onion": 1800, "tomato": 2200}
 SELL_WORDS = ["bech", "beche", "becho", "sell", "बेच", "ਵੇਚ", "vech"]
+FORECAST_WORDS = ["rain", "weather", "forecast", "baarish", "barish", "mausam", "मौसम", "बारिश", "बरसात", "ਮੀਂਹ", "ਮੌਸਮ"]
 HOLD_WORDS = ["hold", "rakh", "rok", "ruk", "रख", "रुक", "रोक", "ਰੱਖ", "ਰੋਕ", "ਰੁਕ"]
 
 
@@ -342,8 +358,10 @@ def extract_entities_rules(transcript: str) -> Entities:
             mandi = m.group(1).title()
     sell = any(_has(w, text) for w in SELL_WORDS)
     hold = any(_has(w, text) for w in HOLD_WORDS)
-    return Entities(crop=crop, mandi=mandi, intent="sell_or_hold" if (sell or hold) else "price_check",
-                    quantity=indic.parse_quantity(transcript))
+    days = indic.parse_days(transcript)
+    forecast = any(_has(w, text) for w in FORECAST_WORDS)
+    intent = "sell_or_hold" if (sell or hold) else "forecast" if (forecast or days) else "price_check"
+    return Entities(crop=crop, mandi=mandi, intent=intent, quantity=indic.parse_quantity(transcript), days=days)
 
 
 def _evon_chat(messages: list[dict], max_tokens: int = 300) -> str:
@@ -381,8 +399,9 @@ def extract_entities(transcript: str, warnings: list) -> Entities:
     except Exception as exc:
         warnings.append(Note("dev_evon_extract", {"exc": type(exc).__name__}))
         return rules
-    return Entities(crop=evon.crop or rules.crop, mandi=evon.mandi or rules.mandi, intent=evon.intent,
-                    quantity=evon.quantity or rules.quantity)
+    return Entities(crop=evon.crop or rules.crop, mandi=evon.mandi or rules.mandi,
+                    intent="forecast" if rules.intent == "forecast" else evon.intent,
+                    quantity=evon.quantity or rules.quantity, days=rules.days)
 
 
 # --------------------------------------------------------------------------
@@ -505,34 +524,71 @@ def _coordinates(mandi: str) -> tuple[float, float] | None:
     return None
 
 
-def fetch_weather(mandi: str, warnings: list) -> Weather | None:
-    coords = _coordinates(mandi)
-    if not coords:
-        warnings.append(Note("weather_unlocated", {"mandi": mandi}))
-        return None
+def _accuweather(coords: tuple[float, float]) -> Weather:
+    """AccuWeather daily forecast (5 days on the standard plan), looked up by the mandi's coordinates."""
+    key = ACCUWEATHER_API_KEY
 
+    def locate():
+        r = requests.get(f"{ACCU_BASE}/locations/v1/cities/geoposition/search",
+                         params={"apikey": key, "q": f"{coords[0]},{coords[1]}"}, timeout=15)
+        r.raise_for_status()
+        return r.json()["Key"]
+
+    def forecast():
+        r = requests.get(f"{ACCU_BASE}/forecasts/v1/daily/5day/{location}",
+                         params={"apikey": key, "metric": "true", "details": "true"}, timeout=15)
+        r.raise_for_status()
+        return r.json()["DailyForecasts"]
+
+    location = _cached(("accu_loc", coords), locate, ttl=7 * 86400)
+    days = []
+    for d in _cached(("accu_fc", location), forecast, ttl=1800):
+        day, night = d.get("Day") or {}, d.get("Night") or {}
+        prob = max(int(x.get("RainProbability") or x.get("PrecipitationProbability") or 0) for x in (day, night))
+        mm = float((day.get("Rain") or {}).get("Value") or 0) + float((night.get("Rain") or {}).get("Value") or 0)
+        tmax = ((d.get("Temperature") or {}).get("Maximum") or {}).get("Value")
+        days.append({"date": str(d["Date"])[:10], "rain_prob": prob, "rain_mm": round(mm, 1),
+                     "tmax": float(tmax) if tmax is not None else None})
+    return Weather(daily=days, max_rain_prob=max(x["rain_prob"] for x in days), source="accuweather")
+
+
+def _open_meteo(coords: tuple[float, float]) -> Weather:
     def call():
         resp = requests.get("https://api.open-meteo.com/v1/forecast", params={
-            "latitude": coords[0], "longitude": coords[1], "forecast_days": 3, "timezone": "Asia/Kolkata",
+            "latitude": coords[0], "longitude": coords[1], "forecast_days": 7, "timezone": "Asia/Kolkata",
             "daily": "precipitation_probability_max,precipitation_sum,temperature_2m_max"}, timeout=15)
         resp.raise_for_status()
         return resp.json()["daily"]
 
+    d = _cached(("weather", coords), call)
+    days = [{"date": t, "rain_prob": int(p or 0), "rain_mm": float(mm or 0), "tmax": float(tx) if tx is not None else None}
+            for t, p, mm, tx in zip(d["time"], d["precipitation_probability_max"],
+                                    d["precipitation_sum"], d["temperature_2m_max"])]
+    return Weather(daily=days, max_rain_prob=max(x["rain_prob"] for x in days))
+
+
+def fetch_weather(mandi: str, warnings: list) -> Weather | None:
+    """AccuWeather when ACCUWEATHER_API_KEY is set, with Open-Meteo as the backup."""
+    coords = _coordinates(mandi)
+    if not coords:
+        warnings.append(Note("weather_unlocated", {"mandi": mandi}))
+        return None
+    if ACCUWEATHER_API_KEY:
+        try:
+            return _accuweather(coords)
+        except (requests.RequestException, KeyError, ValueError, TypeError) as exc:
+            warnings.append(Note("dev_accu_failed", {"exc": type(exc).__name__}))
     try:
-        d = _cached(("weather", coords), call)
-        days = [{"date": t, "rain_prob": int(p or 0), "rain_mm": float(mm or 0), "tmax": float(tx) if tx is not None else None}
-                for t, p, mm, tx in zip(d["time"], d["precipitation_probability_max"],
-                                        d["precipitation_sum"], d["temperature_2m_max"])]
-    except (requests.RequestException, KeyError, ValueError) as exc:
+        return _open_meteo(coords)
+    except (requests.RequestException, KeyError, ValueError):
         warnings.append(Note("weather_unavailable"))
         return None
-    return Weather(daily=days, max_rain_prob=max(x["rain_prob"] for x in days))
 
 
 def scenario_weather(kind: str) -> Weather:
     """Fixed forecasts for demos: 'rainy' (SELL NOW) or 'clear' (HOLD). Labelled in the UI."""
-    rows = {"rainy": [(45, 6.0, 29), (85, 22.0, 27), (60, 11.0, 28)],
-            "clear": [(10, 0.0, 33), (20, 0.4, 34), (15, 0.0, 33)]}[kind]
+    rows = {"rainy": [(45, 6.0, 29), (85, 22.0, 27), (60, 11.0, 28), (30, 2.0, 30), (20, 0.5, 31)],
+            "clear": [(10, 0.0, 33), (20, 0.4, 34), (15, 0.0, 33), (10, 0.0, 32), (15, 0.0, 33)]}[kind]
     today = datetime.now()
     days = [{"date": (today + timedelta(days=i)).strftime("%Y-%m-%d"), "rain_prob": p, "rain_mm": mm, "tmax": t}
             for i, (p, mm, t) in enumerate(rows)]
@@ -545,12 +601,12 @@ def scenario_weather(kind: str) -> Weather:
 def decide(weather: Weather | None, threshold: int = RAIN_THRESHOLD) -> Verdict:
     if weather is None:
         return Verdict("NO DATA", i18n.t("en-IN", "reason.no_weather"), "n/a", "no_weather", 0, threshold)
-    rain = weather.max_rain_prob
+    rain, n = weather.max_rain_prob, len(weather.daily)
     margin = abs(rain - threshold)
     conf = "High" if margin >= 20 else "Medium" if margin >= 10 else "Low"
     if rain > threshold:
-        return Verdict("SELL NOW", i18n.t("en-IN", "reason.sell", rain=rain, thr=threshold), conf, "sell", rain, threshold)
-    return Verdict("HOLD", i18n.t("en-IN", "reason.hold", rain=rain, thr=threshold), conf, "hold", rain, threshold)
+        return Verdict("SELL NOW", i18n.t("en-IN", "reason.sell", rain=rain, thr=threshold, n=n), conf, "sell", rain, threshold, n)
+    return Verdict("HOLD", i18n.t("en-IN", "reason.hold", rain=rain, thr=threshold, n=n), conf, "hold", rain, threshold, n)
 
 
 def build_insights(entities: Entities, snapshot: dict, weather: Weather | None, verdict: Verdict) -> Insights:
@@ -574,7 +630,7 @@ def build_insights(entities: Entities, snapshot: dict, weather: Weather | None, 
         ins.signals.append({"tone": tone, "key": key, "params": params, "text": i18n.t("en-IN", "sig." + key, **params)})
 
     if weather:
-        sig("red" if verdict.label == "SELL NOW" else "green", "rain", rain=weather.max_rain_prob)
+        sig("red" if verdict.label == "SELL NOW" else "green", "rain", rain=weather.max_rain_prob, n=len(weather.daily))
     if ins.trend_direction:
         sig({"up": "green", "down": "amber", "flat": "grey"}[ins.trend_direction], ins.trend_direction,
             pct=f"{abs(ins.trend_pct):g}", n=len(ins.trend))
@@ -592,8 +648,8 @@ def build_insights(entities: Entities, snapshot: dict, weather: Weather | None, 
 TEMPLATES = {
     "hi-IN": {
         "intro": "<reassuring> नमस्ते किसान भाई। <pause> {mandi} मंडी में {crop} का भाव आज ₹{price} प्रति क्विंटल है। <pause> ",
-        "SELL NOW": "अगले तीन दिनों में बारिश की संभावना {rain} प्रतिशत तक है। फसल भीगने का खतरा है, इसलिए मेरी सलाह है कि अभी बेच दीजिए।",
-        "HOLD": "अगले तीन दिनों में बारिश की संभावना सिर्फ {rain} प्रतिशत है, इसलिए घबराने की ज़रूरत नहीं। अभी रुकिए और अच्छे भाव का इंतज़ार कीजिए।",
+        "SELL NOW": "अगले {n} दिनों में बारिश की संभावना {rain} प्रतिशत तक है। फसल भीगने का खतरा है, इसलिए मेरी सलाह है कि अभी बेच दीजिए।",
+        "HOLD": "अगले {n} दिनों में बारिश की संभावना सिर्फ {rain} प्रतिशत है, इसलिए घबराने की ज़रूरत नहीं। अभी रुकिए और अच्छे भाव का इंतज़ार कीजिए।",
         "NO DATA": "मौसम की जानकारी अभी नहीं मिल पाई, इसलिए बेचने या रुकने की सलाह नहीं दे सकता। कृपया थोड़ी देर बाद फिर कोशिश करें।",
         "trend_up": "पिछले सात दिनों में भाव लगभग {pct} प्रतिशत बढ़ा है।",
         "trend_down": "पिछले सात दिनों में भाव लगभग {pct} प्रतिशत गिरा है।",
@@ -603,11 +659,14 @@ TEMPLATES = {
         "ask_both": "मुझे फसल या मंडी का नाम समझ नहीं आया। कृपया फिर से बोलिए, जैसे: खन्ना मंडी में गेहूं का भाव क्या है?",
         "ask_crop": "कौन सी फसल का भाव जानना चाहते हैं? जैसे गेहूं, धान या सरसों।",
         "ask_mandi": "किस मंडी का भाव चाहिए? जैसे खन्ना या करनाल।",
+        "outlook": "दिन-दिन के हिसाब से बारिश की संभावना: {days}।",
+        "limit": "मुझे सिर्फ़ {avail} दिन का पूर्वानुमान दिखता है, {req} दिन का नहीं, इसलिए यह सलाह इन्हीं {avail} दिनों पर आधारित है।",
+        "nopredict": "मैं आने वाले दिनों का सही भाव नहीं बता सकता। यह आज के भाव, पिछले रुझान और बारिश के पूर्वानुमान पर आधारित है।",
     },
     "pa-IN": {
         "intro": "<reassuring> ਸਤ ਸ੍ਰੀ ਅਕਾਲ ਕਿਸਾਨ ਵੀਰ ਜੀ। <pause> {mandi} ਮੰਡੀ ਵਿੱਚ {crop} ਦਾ ਭਾਅ ਅੱਜ ₹{price} ਪ੍ਰਤੀ ਕੁਇੰਟਲ ਹੈ। <pause> ",
-        "SELL NOW": "ਅਗਲੇ ਤਿੰਨ ਦਿਨਾਂ ਵਿੱਚ ਮੀਂਹ ਦੀ ਸੰਭਾਵਨਾ {rain} ਪ੍ਰਤੀਸ਼ਤ ਤੱਕ ਹੈ। ਫ਼ਸਲ ਭਿੱਜਣ ਦਾ ਖ਼ਤਰਾ ਹੈ, ਇਸ ਲਈ ਮੇਰੀ ਸਲਾਹ ਹੈ ਕਿ ਹੁਣੇ ਵੇਚ ਦਿਓ।",
-        "HOLD": "ਅਗਲੇ ਤਿੰਨ ਦਿਨਾਂ ਵਿੱਚ ਮੀਂਹ ਦੀ ਸੰਭਾਵਨਾ ਸਿਰਫ਼ {rain} ਪ੍ਰਤੀਸ਼ਤ ਹੈ, ਇਸ ਲਈ ਫ਼ਿਕਰ ਨਾ ਕਰੋ। ਹਾਲੇ ਰੁਕੋ ਅਤੇ ਚੰਗੇ ਭਾਅ ਦੀ ਉਡੀਕ ਕਰੋ।",
+        "SELL NOW": "ਅਗਲੇ {n} ਦਿਨਾਂ ਵਿੱਚ ਮੀਂਹ ਦੀ ਸੰਭਾਵਨਾ {rain} ਪ੍ਰਤੀਸ਼ਤ ਤੱਕ ਹੈ। ਫ਼ਸਲ ਭਿੱਜਣ ਦਾ ਖ਼ਤਰਾ ਹੈ, ਇਸ ਲਈ ਮੇਰੀ ਸਲਾਹ ਹੈ ਕਿ ਹੁਣੇ ਵੇਚ ਦਿਓ।",
+        "HOLD": "ਅਗਲੇ {n} ਦਿਨਾਂ ਵਿੱਚ ਮੀਂਹ ਦੀ ਸੰਭਾਵਨਾ ਸਿਰਫ਼ {rain} ਪ੍ਰਤੀਸ਼ਤ ਹੈ, ਇਸ ਲਈ ਫ਼ਿਕਰ ਨਾ ਕਰੋ। ਹਾਲੇ ਰੁਕੋ ਅਤੇ ਚੰਗੇ ਭਾਅ ਦੀ ਉਡੀਕ ਕਰੋ।",
         "NO DATA": "ਮੌਸਮ ਦੀ ਜਾਣਕਾਰੀ ਹੁਣੇ ਨਹੀਂ ਮਿਲ ਸਕੀ, ਇਸ ਲਈ ਵੇਚਣ ਜਾਂ ਰੁਕਣ ਦੀ ਸਲਾਹ ਨਹੀਂ ਦੇ ਸਕਦਾ। ਕਿਰਪਾ ਕਰਕੇ ਥੋੜ੍ਹੀ ਦੇਰ ਬਾਅਦ ਦੁਬਾਰਾ ਕੋਸ਼ਿਸ਼ ਕਰੋ।",
         "trend_up": "ਪਿਛਲੇ ਸੱਤ ਦਿਨਾਂ ਵਿੱਚ ਭਾਅ ਲਗਭਗ {pct} ਪ੍ਰਤੀਸ਼ਤ ਵਧਿਆ ਹੈ।",
         "trend_down": "ਪਿਛਲੇ ਸੱਤ ਦਿਨਾਂ ਵਿੱਚ ਭਾਅ ਲਗਭਗ {pct} ਪ੍ਰਤੀਸ਼ਤ ਘਟਿਆ ਹੈ।",
@@ -617,11 +676,14 @@ TEMPLATES = {
         "ask_both": "ਮੈਨੂੰ ਫ਼ਸਲ ਜਾਂ ਮੰਡੀ ਦਾ ਨਾਮ ਸਮਝ ਨਹੀਂ ਆਇਆ। ਕਿਰਪਾ ਕਰਕੇ ਦੁਬਾਰਾ ਬੋਲੋ।",
         "ask_crop": "ਕਿਹੜੀ ਫ਼ਸਲ ਦਾ ਭਾਅ ਜਾਣਨਾ ਹੈ? ਜਿਵੇਂ ਕਣਕ, ਝੋਨਾ ਜਾਂ ਸਰ੍ਹੋਂ।",
         "ask_mandi": "ਕਿਹੜੀ ਮੰਡੀ ਦਾ ਭਾਅ ਚਾਹੀਦਾ ਹੈ? ਜਿਵੇਂ ਖੰਨਾ ਜਾਂ ਕਰਨਾਲ।",
+        "outlook": "ਦਿਨ-ਦਿਨ ਦੇ ਹਿਸਾਬ ਨਾਲ ਮੀਂਹ ਦੀ ਸੰਭਾਵਨਾ: {days}।",
+        "limit": "ਮੈਨੂੰ ਸਿਰਫ਼ {avail} ਦਿਨ ਦਾ ਅਨੁਮਾਨ ਦਿਸਦਾ ਹੈ, {req} ਦਿਨ ਦਾ ਨਹੀਂ, ਇਸ ਲਈ ਇਹ ਸਲਾਹ ਇਨ੍ਹਾਂ {avail} ਦਿਨਾਂ 'ਤੇ ਆਧਾਰਿਤ ਹੈ।",
+        "nopredict": "ਮੈਂ ਆਉਣ ਵਾਲੇ ਦਿਨਾਂ ਦਾ ਸਹੀ ਭਾਅ ਨਹੀਂ ਦੱਸ ਸਕਦਾ। ਇਹ ਅੱਜ ਦੇ ਭਾਅ, ਪਿਛਲੇ ਰੁਝਾਨ ਅਤੇ ਮੀਂਹ ਦੇ ਅਨੁਮਾਨ 'ਤੇ ਆਧਾਰਿਤ ਹੈ।",
     },
     "en-IN": {
         "intro": "<reassuring> Hello. <pause> The price of {crop} in {mandi} mandi today is ₹{price} per quintal. <pause> ",
-        "SELL NOW": "There is up to a {rain} percent chance of rain in the next three days, which can damage your crop. My advice is to sell now.",
-        "HOLD": "The chance of rain in the next three days is only {rain} percent, so there is no need to worry. Hold for now and wait for a better price.",
+        "SELL NOW": "There is up to a {rain} percent chance of rain in the next {n} days, which can damage your crop. My advice is to sell now.",
+        "HOLD": "The chance of rain in the next {n} days is only {rain} percent, so there is no need to worry. Hold for now and wait for a better price.",
         "NO DATA": "I could not get the weather forecast right now, so I cannot advise on selling or holding. Please try again shortly.",
         "trend_up": "Over the last seven days the price has risen about {pct} percent.",
         "trend_down": "Over the last seven days the price has fallen about {pct} percent.",
@@ -631,8 +693,28 @@ TEMPLATES = {
         "ask_both": "I could not understand the crop or the mandi. Please say it again, for example: wheat price in Khanna mandi?",
         "ask_crop": "Which crop's price do you want? For example wheat, paddy or mustard.",
         "ask_mandi": "Which mandi's price do you want? For example Khanna or Karnal.",
+        "outlook": "Day by day, the rain chance is: {days}.",
+        "limit": "The forecast I can see covers only {avail} days, not {req}, so this advice is based on those {avail} days.",
+        "nopredict": "I cannot predict exact future prices. This is based on today's price, the recent trend and the rain forecast.",
     },
 }
+# ---- regional languages (see locales/): names, aliases, templates and voices
+from locales import REGISTRY as _LOCALES  # noqa: E402
+
+for _code, _m in _LOCALES.items():
+    LANGUAGES[_code] = _m.NAME
+    TEMPLATES[_code] = dict(_m.TEMPLATES)
+    CROP_DISPLAY[_code] = dict(_m.CROPS)
+    MANDI_DISPLAY[_code] = dict(_m.MANDIS)
+    TTS_VOICES.setdefault(_code, _m.VOICE)
+    for _crop, _words in _m.CROP_ALIASES.items():
+        CROP_ALIASES[_crop].extend(w for w in [_m.CROPS[_crop], *_words] if w not in CROP_ALIASES[_crop])
+    for _mandi, _local in _m.MANDIS.items():
+        MANDIS[_mandi][3].extend(w for w in [_local, *_m.MANDI_ALIASES.get(_mandi, [])] if w not in MANDIS[_mandi][3])
+    SELL_WORDS.extend(_m.SELL_WORDS)
+    HOLD_WORDS.extend(_m.HOLD_WORDS)
+    FORECAST_WORDS.extend(_m.FORECAST_WORDS)
+
 _TAG_RE = re.compile(r"</?(?:reassuring|pause)\s*/?>\s*", re.I)
 
 
@@ -658,7 +740,16 @@ def compose_advice(language: str, entities: Entities, price: MarketPrice | None,
         return clarification(language, entities)
     crop = CROP_DISPLAY[language][price.crop]
     text = t["intro"].format(mandi=mandi_name(price.mandi, language), crop=crop, price=indic.indian_group(price.modal))
-    text += t[verdict.label].format(rain=weather.max_rain_prob if weather else 0)
+    text += t[verdict.label].format(rain=weather.max_rain_prob if weather else 0, n=verdict.days)
+    asked = entities.days or (insights.days_requested if insights else None)
+    if weather and (asked or entities.intent == "forecast"):
+        listing = ", ".join(f"{i18n.weekday_day(datetime.strptime(d['date'], '%Y-%m-%d'), language)} {d['rain_prob']}%"
+                            for d in weather.daily)
+        text += " <pause> " + t["outlook"].format(days=listing)
+        if asked and insights and insights.days_available and asked > insights.days_available:
+            text += " " + t["limit"].format(avail=insights.days_available, req=asked)
+        if asked:
+            text += " " + t["nopredict"]
     if insights:
         if insights.trend_direction:
             text += " " + t["trend_" + insights.trend_direction].format(pct=f"{abs(insights.trend_pct):g}")
@@ -695,7 +786,7 @@ def polish_with_evon(text: str, language: str, price: MarketPrice, rain: int, wa
 # --------------------------------------------------------------------------
 def synthesize(text: str, language: str = "hi-IN") -> bytes:
     spoken = text if ENABLE_TTS_TAGS else strip_tags(text)
-    body = {"model": TTS_MODEL, "voice": TTS_VOICE, "language": language, "text": spoken,
+    body = {"model": TTS_MODEL, "voice": os.getenv("TTS_VOICE_" + language[:2].upper()) or TTS_VOICES.get(language, "Nalini"), "language": language, "text": spoken,
             "sample_rate": TTS_SAMPLE_RATE, "container": "wav", "encoding": "linear_pcm"}
     try:
         resp = requests.post(GNANI_BASE_URL + TTS_PATH, headers={**_auth_headers("tts"), "Content-Type": "application/json"},
@@ -755,8 +846,16 @@ def run_pipeline(audio: bytes | None = None, text: str | None = None, language: 
 
     price = weather = None
     insights = Insights(quantity=entities.quantity)
-    needs_clarification = not (entities.crop and entities.mandi)
-    if not needs_clarification:
+    general = None
+    import advisor  # imported here because the advisor module imports this one
+
+    market_intent = entities.intent in ("sell_or_hold", "forecast") or bool(entities.days)
+    if (advisor.guide_topic(transcript) and not market_intent) or not (entities.crop and entities.mandi):
+        rep = advisor.reply(transcript, reply_lang, None, [])
+        if rep.topic not in ("no_match", "live"):  # a farming question that is not about today's price
+            general = {"text": rep.text, "topic": rep.topic}
+    needs_clarification = general is None and not (entities.crop and entities.mandi)
+    if general is None and not needs_clarification:
         t0 = time.perf_counter()
         snapshot = fetch_market_snapshot(entities.crop, entities.mandi, warnings)
         price = snapshot["selected"]
@@ -766,12 +865,16 @@ def run_pipeline(audio: bytes | None = None, text: str | None = None, language: 
         else:
             weather = fetch_weather(entities.mandi, warnings)
         timings["tools"] = time.perf_counter() - t0
+        available = len(weather.daily) if weather else 0
+        if weather:
+            weather = weather.first(min(entities.days or DEFAULT_HORIZON, available))
         verdict = decide(weather)
         insights = build_insights(entities, snapshot, weather, verdict)
+        insights.days_requested, insights.days_available = entities.days, available
     else:
         verdict = Verdict("NO DATA", i18n.t("en-IN", "reason.no_entities"), "n/a", "no_entities")
 
-    advice = compose_advice(reply_lang, entities, price, weather, verdict, insights)
+    advice = general["text"] if general else compose_advice(reply_lang, entities, price, weather, verdict, insights)
     if price and weather:
         advice = polish_with_evon(advice, reply_lang, price, weather.max_rain_prob, warnings)
 
@@ -786,5 +889,5 @@ def run_pipeline(audio: bytes | None = None, text: str | None = None, language: 
 
     return KisanBolResult(transcript=transcript, entities=entities, price=price, weather=weather, verdict=verdict,
                           insights=insights, advice_text=strip_tags(advice), audio=audio_out, language=reply_lang,
-                          needs_clarification=needs_clarification, used_context=used_context,
+                          needs_clarification=needs_clarification, general=general, used_context=used_context,
                           warnings=warnings, timings=timings)

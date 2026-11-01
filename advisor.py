@@ -14,9 +14,12 @@ import unicodedata
 from dataclasses import dataclass
 
 import kisanbol_engine as engine
+from locales import REGISTRY as _LOCALES
 
 LANG_NAME = {"en-IN": "English", "hi-IN": "Hindi (Devanagari script)", "pa-IN": "Punjabi (Gurmukhi script)"}
 _I = {"en-IN": 0, "hi-IN": 1, "pa-IN": 2}
+LANG_NAME.update({"mr-IN": "Marathi (Devanagari script)", "gu-IN": "Gujarati (Gujarati script)",
+                  "bn-IN": "Bengali (Bengali script)", "ta-IN": "Tamil (Tamil script)", "te-IN": "Telugu (Telugu script)"})
 
 # ---- what counts as farming --------------------------------------------------------------------
 AGRI_WORDS = (
@@ -153,8 +156,37 @@ class Reply:
     topic: str  # a guide topic, "live", "refused", "no_match", "model"
 
 
-def _pick(table: tuple, lang: str) -> str:
-    return table[_I.get(lang, 0)]
+def _pick(table: tuple, lang: str, key: str | None = None) -> str:
+    """The text for `lang`: built-in languages come from the 3-tuples, regional ones from their locale module."""
+    if lang in _I:
+        return table[_I[lang]]
+    loc = _LOCALES.get(lang)
+    return loc.ADVISOR[key] if loc and key in loc.ADVISOR else table[0]
+
+
+def _guide_text(topic: str, lang: str) -> str:
+    answers = dict((t_, ans) for t_, _, ans in _GUIDE)[topic]
+    loc = _LOCALES.get(lang)
+    if lang not in _I and loc and topic in loc.ADVISOR["guide"]:
+        return loc.ADVISOR["guide"][topic]
+    return answers[_I.get(lang, 0)]
+
+
+def _steps(code: str, lang: str) -> tuple:
+    loc = _LOCALES.get(lang)
+    if lang not in _I and loc and code in loc.ADVISOR["steps"]:
+        return tuple(loc.ADVISOR["steps"][code])
+    return STEPS[code][_I.get(lang, 0)]
+
+
+# regional keywords are added to the built-in ones
+_LOCAL_KEYWORDS: dict[str, tuple[str, ...]] = {}
+_LOCAL_RAIN: tuple[str, ...] = ()
+for _m in _LOCALES.values():
+    for _topic, _words in _m.ADVISOR["keywords"].items():
+        _LOCAL_KEYWORDS[_topic] = _LOCAL_KEYWORDS.get(_topic, ()) + tuple(_words)
+    _LOCAL_RAIN += tuple(_m.ADVISOR["rain_words"])
+AGRI_WORDS = AGRI_WORDS + tuple(w for _m in _LOCALES.values() for w in _m.ADVISOR["farm_words"])
 
 
 def _has_any(text: str, words: tuple[str, ...]) -> bool:
@@ -178,19 +210,19 @@ def is_farming(question: str) -> bool:
 def _rain_line(result, lang: str) -> str:
     if result is None or result.weather is None:
         return ""
-    demo = _pick(DEMO_TAG, lang) if result.weather.source == "scenario" else ""
-    return _pick(RAIN_LINE, lang).format(rain=result.weather.max_rain_prob, demo=demo)
+    demo = _pick(DEMO_TAG, lang, "demo_tag") if result.weather.source == "scenario" else ""
+    return _pick(RAIN_LINE, lang, "rain_line").format(rain=result.weather.max_rain_prob, demo=demo)
 
 
 def explain(result, lang: str) -> Reply:
     """One-shot plain explanation of the current result: the facts, why, and what to do now."""
     if result is None or result.price is None or result.needs_clarification:
-        return Reply(_pick(NEED_DATA, lang), "live")
+        return Reply(_pick(NEED_DATA, lang, "need_data"), "live")
     code = result.verdict.code if result.verdict.code in STEPS else "no_weather"
-    steps = [s.format(thr=engine.RAIN_THRESHOLD) for s in STEPS[code][_I.get(lang, 0)]]
+    steps = [s.format(thr=engine.RAIN_THRESHOLD) for s in _steps(code, lang)]
     body = engine.strip_tags(result.advice_text)
     lines = "\n".join(f"{i}. {s}" for i, s in enumerate(steps, 1))
-    return Reply(f"{body}\n\n**{_pick(NEXT_TITLE, lang)}**\n{lines}", "live")
+    return Reply(f"{body}\n\n**{_pick(NEXT_TITLE, lang, "next_title")}**\n{lines}", "live")
 
 
 def _facts(result) -> dict:
@@ -231,27 +263,35 @@ def _model_reply(question: str, lang: str, result, history: list[dict]) -> str |
     return out[:1200] or None
 
 
+def guide_topic(question: str) -> str | None:
+    """Which built-in guide topic a question is about, or None (price questions are not guide topics)."""
+    low = (question or "").lower()
+    sell_intent = _has_any(low, _SELL_WORDS)
+    rain_words = ("rain", "baarish", "barish", "बारिश", "बरसात", "ਮੀਂਹ", "ਬਾਰਿਸ਼", "ਬਰਸਾਤ") + _LOCAL_RAIN
+    for topic, words, _ in _GUIDE:
+        if _has_any(low, words + _LOCAL_KEYWORDS.get(topic, ())) or (topic == "rain_harvest" and not sell_intent and _has_any(low, rain_words)):
+            return topic
+    return None
+
+
 def reply(question: str, lang: str, result=None, history: list[dict] | None = None) -> Reply:
     q = (question or "").strip()
     if not q:
-        return Reply(_pick(NO_MATCH, lang), "no_match")
+        return Reply(_pick(NO_MATCH, lang, "no_match"), "no_match")
     low = q.lower()
     history = history or []
     follow_up = any(m["role"] == "bot" and m.get("topic") not in ("refused", None) for m in history[-2:])
     if not is_farming(q) and not (follow_up and len(q.split()) <= 4):
-        return Reply(_pick(OFF_TOPIC, lang), "refused")
+        return Reply(_pick(OFF_TOPIC, lang, "off_topic"), "refused")
 
-    sell_intent = _has_any(low, _SELL_WORDS)
-    rain_words = ("rain", "baarish", "barish", "बारिश", "बरसात", "ਮੀਂਹ", "ਬਾਰਿਸ਼", "ਬਰਸਾਤ")
-    for topic, words, answers in _GUIDE:
-        hit = _has_any(low, words) or (topic == "rain_harvest" and not sell_intent and _has_any(low, rain_words))
-        if hit:
-            text = _pick(answers, lang)
-            if topic in ("irrigation", "rain_harvest", "storage"):
-                extra = _rain_line(result, lang)
-                if extra:
-                    text = f"{text}\n\n{extra}"
-            return Reply(text, topic)
+    topic = guide_topic(q)
+    if topic:
+        text = _guide_text(topic, lang)
+        if topic in ("irrigation", "rain_harvest", "storage"):
+            extra = _rain_line(result, lang)
+            if extra:
+                text = f"{text}\n\n{extra}"
+        return Reply(text, topic)
 
     if _has_any(low, _PRICE_WORDS):
         return explain(result, lang)
@@ -259,4 +299,4 @@ def reply(question: str, lang: str, result=None, history: list[dict] | None = No
     smart = _model_reply(q, lang, result, history)
     if smart:
         return Reply(smart, "model")
-    return Reply(_pick(NO_MATCH, lang), "no_match")
+    return Reply(_pick(NO_MATCH, lang, "no_match"), "no_match")

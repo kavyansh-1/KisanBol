@@ -137,3 +137,9 @@ A chat panel at the bottom of the page answers farming questions in the selected
 ## Keys
 
 Put keys in `.env` (copy `.env.example`): `GNANI_STT_KEY` for speech-to-text, `GNANI_TTS_KEY` for text-to-speech, or one `GNANI_API_KEY` that works for both. Never commit `.env`.
+
+## Weather, questions and languages
+
+- **Weather:** set `ACCUWEATHER_API_KEY` (Streamlit Cloud: add it under Secrets). AccuWeather's standard plan gives a 5-day forecast, so a question about 12 days is answered with the 5 days available, and the answer says so. Without the key, or if AccuWeather is down, the free Open-Meteo forecast is used.
+- **Answers follow the question:** "price in 5 days", "will it rain", "sell or hold" and general farming questions each get their own answer. The horizon in the question ("in 5 days") sets how many days of rain are used. Exact future prices are never predicted; the answer says that and uses the recent trend plus the forecast.
+- **10 languages:** English, Hindi, Punjabi, Marathi, Gujarati, Bengali, Tamil, Telugu, Kannada, Malayalam. Add one by copying a file in `locales/` and checking it with `python check_locale.py <code>`.

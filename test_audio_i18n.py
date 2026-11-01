@@ -125,7 +125,7 @@ def test_every_key_exists_in_all_three_languages_with_same_placeholders():
 
 def test_translation_helpers():
     assert i18n.t("hi-IN", "verdict.sell") == "अभी बेचिए"
-    assert "85" in i18n.t("pa-IN", "reason.sell", rain=85, thr=70)
+    assert "85" in i18n.t("pa-IN", "reason.sell", rain=85, thr=70, n=3)
     assert i18n.t("xx-XX", "go") == "Get advice" and i18n.t("en-IN", "no.such.key") == "no.such.key"
 
 

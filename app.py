@@ -40,10 +40,9 @@ def esc(x) -> str:
 
 
 # ------------------------------------------------------------------ language switch (top right)
-c_brand, c_lang = st.columns([3, 2])
-c_brand.markdown("<div class='topbar-brand'>किसानबोल<span>KisanBol</span></div>", unsafe_allow_html=True)
-picked = c_lang.segmented_control("Language", list(i18n.LANGS), format_func=i18n.LANGS.get, default=st.session_state["lang"],
-                                  key="lang_pick", label_visibility="collapsed")
+st.markdown("<div class='topbar-brand'>किसानबोल<span>KisanBol</span></div>", unsafe_allow_html=True)
+picked = st.pills("Language", list(i18n.LANGS), format_func=i18n.LANGS.get, selection_mode="single",
+                  default=st.session_state["lang"], key="lang_pick", label_visibility="collapsed")
 lang = picked or st.session_state["lang"]
 st.session_state["lang"] = lang
 
@@ -162,10 +161,17 @@ if st.session_state["error"]:
 
 # ------------------------------------------------------------------ answer
 res = st.session_state["result"]
-if res:
+if res and res.general:  # a farming question that is not about today's price: answer it directly
+    with st.chat_message("user", avatar="🧑‍🌾"):
+        st.markdown(res.transcript)
+    with st.chat_message("assistant", avatar="🌾"):
+        st.markdown(res.general["text"])
+        if res.audio:
+            st.audio(res.audio, format="audio/wav", autoplay=bool(st.session_state["fresh"]))
+elif res:
     cls, vkey = VERDICT_KEY[res.verdict.label]
     v = res.verdict
-    reason = T("reason." + v.code, rain=v.rain, thr=v.threshold)
+    reason = T("reason." + v.code, rain=v.rain, thr=v.threshold, n=v.days)
     chips = ""
     for sg in res.insights.signals:
         params = dict(sg["params"])
@@ -234,8 +240,9 @@ if res:
                      .encode(x=alt.X("label:N", sort=None), y="price:Q")).properties(height=210)
             st.altair_chart(chart.configure_view(strokeWidth=0).configure_axis(**cfg), use_container_width=True)
         with c_right.container(border=True):
-            badge = ("b-sim", T("badge.sim")) if res.weather.source == "scenario" else ("b-live", T("badge.live"))
-            H(f'<h3 style="margin:0">{esc(T("chart.rain"))}<span class="badge {badge[0]}">{esc(badge[1])}</span></h3>'
+            badge = {"scenario": ("b-sim", T("badge.sim")), "accuweather": ("b-live", "AccuWeather")}.get(
+                res.weather.source, ("b-live", T("badge.live")))
+            H(f'<h3 style="margin:0">{esc(T("chart.rain", n=len(res.weather.daily)))}<span class="badge {badge[0]}">{esc(badge[1])}</span></h3>'
               f'<p class="sub" style="margin:0">{esc(T("chart.rain_sub", thr=engine.RAIN_THRESHOLD))}</p>')
             wd = pd.DataFrame(res.weather.daily)
             wd["day"] = [i18n.weekday_day(datetime.strptime(d, "%Y-%m-%d"), lang) for d in wd["date"]]

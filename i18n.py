@@ -89,13 +89,13 @@ _ENTRIES: dict[str, tuple[str, str, str]] = {
     "verdict.hold": ("HOLD", "रुकिए", "ਰੁਕੋ"),
     "verdict.none": ("NEED MORE INFO", "और जानकारी चाहिए", "ਹੋਰ ਜਾਣਕਾਰੀ ਚਾਹੀਦੀ"),
     "reason.sell": (
-        "Rain chance is up to {rain}% in the next 3 days (above {thr}%). Rain can damage stored grain.",
-        "अगले 3 दिनों में बारिश की संभावना {rain}% तक है ({thr}% से ज़्यादा)। बारिश से रखा अनाज भीग सकता है।",
-        "ਅਗਲੇ 3 ਦਿਨਾਂ ਵਿੱਚ ਮੀਂਹ ਦੀ ਸੰਭਾਵਨਾ {rain}% ਤੱਕ ਹੈ ({thr}% ਤੋਂ ਵੱਧ)। ਮੀਂਹ ਨਾਲ ਰੱਖਿਆ ਅਨਾਜ ਭਿੱਜ ਸਕਦਾ ਹੈ।"),
+        "Rain chance is up to {rain}% in the next {n} days (above {thr}%). Rain can damage stored grain.",
+        "अगले {n} दिनों में बारिश की संभावना {rain}% तक है ({thr}% से ज़्यादा)। बारिश से रखा अनाज भीग सकता है।",
+        "ਅਗਲੇ {n} ਦਿਨਾਂ ਵਿੱਚ ਮੀਂਹ ਦੀ ਸੰਭਾਵਨਾ {rain}% ਤੱਕ ਹੈ ({thr}% ਤੋਂ ਵੱਧ)। ਮੀਂਹ ਨਾਲ ਰੱਖਿਆ ਅਨਾਜ ਭਿੱਜ ਸਕਦਾ ਹੈ।"),
     "reason.hold": (
-        "Rain chance is at most {rain}% in the next 3 days (not above {thr}%), so waiting is low risk.",
-        "अगले 3 दिनों में बारिश की संभावना अधिकतम {rain}% है ({thr}% से ज़्यादा नहीं), इसलिए रुकना कम जोखिम वाला है।",
-        "ਅਗਲੇ 3 ਦਿਨਾਂ ਵਿੱਚ ਮੀਂਹ ਦੀ ਸੰਭਾਵਨਾ ਵੱਧ ਤੋਂ ਵੱਧ {rain}% ਹੈ ({thr}% ਤੋਂ ਵੱਧ ਨਹੀਂ), ਇਸ ਲਈ ਰੁਕਣਾ ਘੱਟ ਜੋਖ਼ਮ ਵਾਲਾ ਹੈ।"),
+        "Rain chance is at most {rain}% in the next {n} days (not above {thr}%), so waiting is low risk.",
+        "अगले {n} दिनों में बारिश की संभावना अधिकतम {rain}% है ({thr}% से ज़्यादा नहीं), इसलिए रुकना कम जोखिम वाला है।",
+        "ਅਗਲੇ {n} ਦਿਨਾਂ ਵਿੱਚ ਮੀਂਹ ਦੀ ਸੰਭਾਵਨਾ ਵੱਧ ਤੋਂ ਵੱਧ {rain}% ਹੈ ({thr}% ਤੋਂ ਵੱਧ ਨਹੀਂ), ਇਸ ਲਈ ਰੁਕਣਾ ਘੱਟ ਜੋਖ਼ਮ ਵਾਲਾ ਹੈ।"),
     "reason.no_weather": (
         "The weather forecast is not available, so no sell or hold advice is given.",
         "मौसम का पूर्वानुमान नहीं मिल पाया, इसलिए बेचने या रुकने की सलाह नहीं दी गई।",
@@ -133,7 +133,7 @@ _ENTRIES: dict[str, tuple[str, str, str]] = {
     "save": ("Save advice", "सलाह सहेजें", "ਸਲਾਹ ਸੰਭਾਲੋ"),
     "chart.price": ("Price, last {n} days", "भाव, पिछले {n} दिन", "ਭਾਅ, ਪਿਛਲੇ {n} ਦਿਨ"),
     "chart.price_sub": ("Rupees per quintal in {mandi}", "{mandi} में रुपये प्रति क्विंटल", "{mandi} ਵਿੱਚ ਰੁਪਏ ਪ੍ਰਤੀ ਕੁਇੰਟਲ"),
-    "chart.rain": ("Rain chance, next 3 days", "अगले 3 दिन बारिश की संभावना", "ਅਗਲੇ 3 ਦਿਨ ਮੀਂਹ ਦੀ ਸੰਭਾਵਨਾ"),
+    "chart.rain": ("Rain chance, next {n} days", "अगले {n} दिन बारिश की संभावना", "ਅਗਲੇ {n} ਦਿਨ ਮੀਂਹ ਦੀ ਸੰਭਾਵਨਾ"),
     "chart.rain_sub": ("Dashed line is {thr}%. Above it means sell now.",
                        "बिंदीदार रेखा {thr}% है। इससे ऊपर यानी अभी बेचिए।",
                        "ਬਿੰਦੀਆਂ ਵਾਲੀ ਲਕੀਰ {thr}% ਹੈ। ਇਸ ਤੋਂ ਉੱਪਰ ਮਤਲਬ ਹੁਣੇ ਵੇਚੋ।"),
@@ -160,8 +160,8 @@ _ENTRIES: dict[str, tuple[str, str, str]] = {
                    "ਇਹ ਸਿਰਫ਼ ਮਦਦ ਲਈ ਹੈ, ਵਿੱਤੀ ਸਲਾਹ ਨਹੀਂ। ਭਾਅ ਅਤੇ ਮੌਸਮ ਬਦਲ ਸਕਦੇ ਹਨ।"),
     "privacy": ("Your recordings are not stored.", "आपकी रिकॉर्डिंग सहेजी नहीं जाती।", "ਤੁਹਾਡੀ ਰਿਕਾਰਡਿੰਗ ਸੰਭਾਲੀ ਨਹੀਂ ਜਾਂਦੀ।"),
     # ---- signals (chips)
-    "sig.rain": ("Rain chance up to {rain}% in 3 days", "3 दिन में बारिश की संभावना {rain}% तक",
-                 "3 ਦਿਨਾਂ ਵਿੱਚ ਮੀਂਹ ਦੀ ਸੰਭਾਵਨਾ {rain}% ਤੱਕ"),
+    "sig.rain": ("Rain chance up to {rain}% in {n} days", "{n} दिन में बारिश की संभावना {rain}% तक",
+                 "{n} ਦਿਨਾਂ ਵਿੱਚ ਮੀਂਹ ਦੀ ਸੰਭਾਵਨਾ {rain}% ਤੱਕ"),
     "sig.up": ("Price rising ({pct}% in {n} days)", "भाव बढ़ रहा है ({n} दिन में {pct}%)",
                "ਭਾਅ ਵਧ ਰਿਹਾ ਹੈ ({n} ਦਿਨਾਂ ਵਿੱਚ {pct}%)"),
     "sig.down": ("Price falling ({pct}% in {n} days)", "भाव गिर रहा है ({n} दिन में {pct}%)",
@@ -224,6 +224,7 @@ _DEV = {
     "dev_evon_extract": "Evon extraction failed ({exc}); used rule-based extraction.",
     "dev_evon_phrase": "Evon phrasing failed; used the standard advice template.",
     "dev_evon_dropped": "Evon's rephrasing dropped a fact; used the standard advice template.",
+    "dev_accu_failed": "AccuWeather request failed ({exc}); used Open-Meteo instead.",
     "dev_no_agmarknet_key": "DATA_GOV_IN_API_KEY not set; showing demo prices, not live Agmarknet data.",
 }
 
@@ -268,3 +269,14 @@ def weekday_day(d, lang: str) -> str:
 def day_month(d, lang: str) -> str:
     """'25 Oct' / '25 अक्टू'."""
     return f"{d.day} {_MONTHS.get(lang, _MONTHS['en-IN'])[d.month - 1]}"
+
+
+# ---- regional languages (see locales/): add their UI text, state names, weekday and month names
+from locales import REGISTRY as _LOCALES  # noqa: E402
+
+for _code, _mod in _LOCALES.items():
+    LANGS[_code] = _mod.NAME
+    TEXT[_code] = dict(_mod.UI)  # developer notes and any missing key fall back to English in t()
+    STATE_NAMES[_code] = dict(_mod.STATES)
+    _WEEKDAYS[_code] = list(_mod.WEEKDAYS)
+    _MONTHS[_code] = list(_mod.MONTHS)
