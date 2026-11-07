@@ -145,6 +145,7 @@ class Insights:
     signals: list[dict] = field(default_factory=list)  # [{"tone": "red|green|amber|grey", "text": ...}]
     days_requested: int | None = None  # what the farmer asked for
     days_available: int = 0  # what the forecast provider can give
+    price_days: int = 7  # how many days of price history the trend covers
 
 
 @dataclass
@@ -160,6 +161,7 @@ class KisanBolResult:
     language: str  # reply language actually used
     needs_clarification: bool = False
     general: dict | None = None  # {"text", "topic"}: a farming question that is not about today's price
+    location_info: dict | None = None  # {"mandi", "km", "used"}: set when the farmer shared a location
     used_context: list[str] = field(default_factory=list)
     warnings: list = field(default_factory=list)
     timings: dict = field(default_factory=dict)
@@ -172,6 +174,7 @@ class KisanBolResult:
              "verdict": self.verdict.__dict__, "insights": self.insights.__dict__,
              "advice_text": self.advice_text, "language": self.language,
              "needs_clarification": self.needs_clarification, "general": self.general, "used_context": self.used_context,
+             "location_info": self.location_info,
              "warnings": [str(w) for w in self.warnings], "timings": self.timings}
         if include_audio and self.audio:
             d["audio_base64"] = base64.b64encode(self.audio).decode()
@@ -225,6 +228,13 @@ MANDI_DISPLAY = {
               "Hisar": "ਹਿਸਾਰ", "Sirsa": "ਸਰਸਾ", "Kurukshetra": "ਕੁਰੂਕਸ਼ੇਤਰ"},
 }
 MANDI_COORDS = {k: (v[1], v[2]) for k, v in MANDIS.items()}
+LOCATION_MAX_KM = float(os.getenv("LOCATION_MAX_KM", "150"))  # farther than this from every covered mandi: do not guess
+
+
+def nearest_mandi(lat: float, lon: float) -> tuple[str, float, bool]:
+    """The covered mandi closest to the farmer: (name, distance in km, within LOCATION_MAX_KM)."""
+    name, km = min(((m, mi.haversine_km((lat, lon), c)) for m, c in MANDI_COORDS.items()), key=lambda x: x[1])
+    return name, round(km), km <= LOCATION_MAX_KM
 # Illustrative prices used ONLY when live Agmarknet data is unavailable. Always labelled as demo.
 DEMO_PRICES = {"wheat": 2275, "paddy": 2320, "rice": 3400, "maize": 2090, "mustard": 5650,
                "cotton": 7121, "potato": 1450, "onion": 1800, "tomato": 2200}
@@ -609,12 +619,16 @@ def decide(weather: Weather | None, threshold: int = RAIN_THRESHOLD) -> Verdict:
     return Verdict("HOLD", i18n.t("en-IN", "reason.hold", rain=rain, thr=threshold, n=n), conf, "hold", rain, threshold, n)
 
 
-def build_insights(entities: Entities, snapshot: dict, weather: Weather | None, verdict: Verdict) -> Insights:
+def build_insights(entities: Entities, snapshot: dict, weather: Weather | None, verdict: Verdict,
+                   price_days: int | None = None) -> Insights:
     sel: MarketPrice = snapshot["selected"]
     ins = Insights(quantity=entities.quantity)
     series = snapshot.get("series")
     ins.trend_source = "live" if series else "demo"
     ins.trend = series or mi.demo_series(sel.crop, sel.mandi, sel.modal)
+    if price_days:  # 1 day = yesterday and today; 3 = last three prices; 7 = the full week
+        ins.trend = ins.trend[-max(price_days, 2):]
+    ins.price_days = price_days or len(ins.trend)
     stats = mi.trend_stats(ins.trend)
     if stats:
         ins.trend_pct, ins.trend_direction = stats["pct"], stats["direction"]
@@ -633,7 +647,7 @@ def build_insights(entities: Entities, snapshot: dict, weather: Weather | None, 
         sig("red" if verdict.label == "SELL NOW" else "green", "rain", rain=weather.max_rain_prob, n=len(weather.daily))
     if ins.trend_direction:
         sig({"up": "green", "down": "amber", "flat": "grey"}[ins.trend_direction], ins.trend_direction,
-            pct=f"{abs(ins.trend_pct):g}", n=len(ins.trend))
+            pct=f"{abs(ins.trend_pct):g}", n=ins.price_days)
     if ins.best_alt:
         sig("amber", "better", alt=ins.best_alt["mandi"], diff=indic.indian_group(ins.best_alt["diff"]),
             km=ins.best_alt["distance_km"])
@@ -740,7 +754,8 @@ def compose_advice(language: str, entities: Entities, price: MarketPrice | None,
         return clarification(language, entities)
     crop = CROP_DISPLAY[language][price.crop]
     text = t["intro"].format(mandi=mandi_name(price.mandi, language), crop=crop, price=indic.indian_group(price.modal))
-    text += t[verdict.label].format(rain=weather.max_rain_prob if weather else 0, n=verdict.days)
+    verdict_line = t[verdict.label].format(rain=weather.max_rain_prob if weather else 0, n=verdict.days)
+    text += i18n.one_day(language, verdict_line) if verdict.days == 1 else verdict_line
     asked = entities.days or (insights.days_requested if insights else None)
     if weather and (asked or entities.intent == "forecast"):
         listing = ", ".join(f"{i18n.weekday_day(datetime.strptime(d['date'], '%Y-%m-%d'), language)} {d['rain_prob']}%"
@@ -751,8 +766,11 @@ def compose_advice(language: str, entities: Entities, price: MarketPrice | None,
         if asked:
             text += " " + t["nopredict"]
     if insights:
-        if insights.trend_direction:
+        if insights.trend_direction and insights.price_days == 7:
             text += " " + t["trend_" + insights.trend_direction].format(pct=f"{abs(insights.trend_pct):g}")
+        elif insights.trend_direction:  # the templates say "seven days": use the short, window-aware phrase instead
+            text += " " + i18n.t(language, "sig." + insights.trend_direction, pct=f"{abs(insights.trend_pct):g}",
+                                 n=insights.price_days) + ("।" if language in ("hi-IN", "pa-IN", "bn-IN") else ".")
         if insights.revenue and insights.quantity:
             text += " <pause> " + t["revenue"].format(qty=_fmt_qty(insights.quantity), crop=crop,
                                                       amount=indic.amount_words(insights.revenue, language))
@@ -812,9 +830,12 @@ def synthesize(text: str, language: str = "hi-IN") -> bytes:
 # --------------------------------------------------------------------------
 def run_pipeline(audio: bytes | None = None, text: str | None = None, language: str = "auto",
                  filename: str = "query.wav", speak: bool = True, weather_scenario: str | None = None,
-                 context: Entities | None = None) -> KisanBolResult:
+                 context: Entities | None = None, location: tuple[float, float] | None = None,
+                 view_days: int | None = None) -> KisanBolResult:
     """Run the full loop. `audio` = real flow, `text` = skip STT. `context` = previous turn's entities,
-    used to fill gaps in follow-ups such as 'aur Karnal mein?'."""
+    used to fill gaps in follow-ups such as 'aur Karnal mein?'. `location` = (lat, lon) the farmer chose to share:
+    when no mandi is named it picks the nearest covered mandi, never one far away. `view_days` (1, 3 or 7) sets the
+    price-history window and the rain-forecast window when the question names no number of days."""
     warnings: list = []
     timings: dict[str, float] = {}
     stt_lang = "hi-IN" if language == "auto" else language
@@ -842,6 +863,12 @@ def run_pipeline(audio: bytes | None = None, text: str | None = None, language: 
         if used_context and not entities.quantity and context.quantity:
             entities.quantity = context.quantity
             used_context.append("quantity")
+    location_info = None
+    if location and entities.crop and not entities.mandi:
+        near, km, close = nearest_mandi(*location)
+        location_info = {"mandi": near, "km": km, "used": close}
+        if close:
+            entities.mandi = near
     timings["reasoning"] = time.perf_counter() - t0
 
     price = weather = None
@@ -867,9 +894,9 @@ def run_pipeline(audio: bytes | None = None, text: str | None = None, language: 
         timings["tools"] = time.perf_counter() - t0
         available = len(weather.daily) if weather else 0
         if weather:
-            weather = weather.first(min(entities.days or DEFAULT_HORIZON, available))
+            weather = weather.first(min(entities.days or view_days or DEFAULT_HORIZON, available))
         verdict = decide(weather)
-        insights = build_insights(entities, snapshot, weather, verdict)
+        insights = build_insights(entities, snapshot, weather, verdict, price_days=view_days)
         insights.days_requested, insights.days_available = entities.days, available
     else:
         verdict = Verdict("NO DATA", i18n.t("en-IN", "reason.no_entities"), "n/a", "no_entities")
@@ -890,4 +917,5 @@ def run_pipeline(audio: bytes | None = None, text: str | None = None, language: 
     return KisanBolResult(transcript=transcript, entities=entities, price=price, weather=weather, verdict=verdict,
                           insights=insights, advice_text=strip_tags(advice), audio=audio_out, language=reply_lang,
                           needs_clarification=needs_clarification, general=general, used_context=used_context,
+                          location_info=location_info,
                           warnings=warnings, timings=timings)

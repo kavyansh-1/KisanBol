@@ -3,6 +3,8 @@
 Each entry is (English, Hindi, Punjabi). Keys starting with `dev_` are developer notes (English only)."""
 from __future__ import annotations
 
+import re
+
 LANGS = {"en-IN": "English", "hi-IN": "हिन्दी", "pa-IN": "ਪੰਜਾਬੀ"}
 _ORDER = ("en-IN", "hi-IN", "pa-IN")
 
@@ -53,6 +55,12 @@ _ENTRIES: dict[str, tuple[str, str, str]] = {
                 "ਕੀ ਦੂਜੀ ਮੰਡੀ ਵਿੱਚ ਮਾਲ ਲਿਜਾਣਾ ਫ਼ਾਇਦੇ ਦਾ ਹੈ?"),
     "chat.q3": ("What should I do if hail damages my crop?", "ओले से फसल ख़राब हो जाए तो क्या करें?",
                 "ਗੜਿਆਂ ਨਾਲ ਫ਼ਸਲ ਖ਼ਰਾਬ ਹੋ ਜਾਵੇ ਤਾਂ ਕੀ ਕਰੀਏ?"),
+    "loc.hint": ('Tap the pin and allow location to see prices from your nearest mandi. It is used only for this and is not saved.', 'पिन दबाइए और लोकेशन की अनुमति दीजिए, ताकि आपकी सबसे नज़दीकी मंडी का भाव मिले। इसका उपयोग सिर्फ़ इसी के लिए होता है और यह सहेजी नहीं जाती।', 'ਪਿੰਨ ਦਬਾਓ ਅਤੇ ਲੋਕੇਸ਼ਨ ਦੀ ਇਜਾਜ਼ਤ ਦਿਓ, ਤਾਂ ਜੋ ਤੁਹਾਡੀ ਸਭ ਤੋਂ ਨੇੜਲੀ ਮੰਡੀ ਦਾ ਭਾਅ ਮਿਲੇ। ਇਹ ਸਿਰਫ਼ ਇਸੇ ਲਈ ਵਰਤੀ ਜਾਂਦੀ ਹੈ ਅਤੇ ਸਾਂਭੀ ਨਹੀਂ ਜਾਂਦੀ।'),
+    "loc.on": ('Location is on. Your nearest mandi is {mandi} ({km} km away).', 'लोकेशन चालू है। आपकी सबसे नज़दीकी मंडी {mandi} है ({km} किमी दूर)।', 'ਲੋਕੇਸ਼ਨ ਚਾਲੂ ਹੈ। ਤੁਹਾਡੀ ਸਭ ਤੋਂ ਨੇੜਲੀ ਮੰਡੀ {mandi} ਹੈ ({km} ਕਿਮੀ ਦੂਰ)।'),
+    "loc.far": ("You are far from the mandis covered here (nearest: {mandi}, {km} km). Please say your mandi's name.", 'आप यहाँ शामिल मंडियों से दूर हैं (सबसे नज़दीकी: {mandi}, {km} किमी)। कृपया अपनी मंडी का नाम बोलिए।', 'ਤੁਸੀਂ ਇੱਥੇ ਸ਼ਾਮਲ ਮੰਡੀਆਂ ਤੋਂ ਦੂਰ ਹੋ (ਸਭ ਤੋਂ ਨੇੜੇ: {mandi}, {km} ਕਿਮੀ)। ਕਿਰਪਾ ਕਰਕੇ ਆਪਣੀ ਮੰਡੀ ਦਾ ਨਾਮ ਦੱਸੋ।'),
+    "loc.used": ('Mandi chosen from your location: {mandi} ({km} km away).', 'आपकी लोकेशन से चुनी गई मंडी: {mandi} ({km} किमी दूर)।', 'ਤੁਹਾਡੀ ਲੋਕੇਸ਼ਨ ਤੋਂ ਚੁਣੀ ਮੰਡੀ: {mandi} ({km} ਕਿਮੀ ਦੂਰ)।'),
+    "view.days": ('Days to show', 'कितने दिन दिखाएँ', 'ਕਿੰਨੇ ਦਿਨ ਦਿਖਾਈਏ'),
+    "view.hint": ('Applies to the price history and the rain forecast. Leave it unselected for the usual view.', 'यह भाव के इतिहास और बारिश के पूर्वानुमान, दोनों पर लागू होता है। सामान्य दृश्य के लिए इसे चुना हुआ न रखें।', "ਇਹ ਭਾਅ ਦੇ ਇਤਿਹਾਸ ਅਤੇ ਮੀਂਹ ਦੇ ਅਨੁਮਾਨ, ਦੋਵਾਂ 'ਤੇ ਲਾਗੂ ਹੁੰਦਾ ਹੈ। ਆਮ ਦ੍ਰਿਸ਼ ਲਈ ਇਸਨੂੰ ਚੁਣਿਆ ਹੋਇਆ ਨਾ ਰੱਖੋ।"),
     "go": ("Get advice", "सलाह लीजिए", "ਸਲਾਹ ਲਓ"),
     "examples": ("Try an example", "उदाहरण आज़माइए", "ਇੱਕ ਮਿਸਾਲ ਅਜ਼ਮਾਓ"),
     "thinking": ("Listening, checking price and weather…", "सुन रहा हूँ, भाव और मौसम देख रहा हूँ…",
@@ -248,13 +256,29 @@ _MONTHS = {"en-IN": ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Se
            "pa-IN": ["ਜਨ", "ਫ਼ਰ", "ਮਾਰਚ", "ਅਪ੍ਰੈ", "ਮਈ", "ਜੂਨ", "ਜੁਲਾ", "ਅਗ", "ਸਤੰ", "ਅਕਤੂ", "ਨਵੰ", "ਦਸੰ"]}
 
 
+# "1 days" is wrong: where a language changes the word for a single day, rewrite it (longer forms first)
+_ONE_DAY = {
+    "en-IN": [("days", "day")], "hi-IN": [("दिनों", "दिन")], "pa-IN": [("ਦਿਨਾਂ", "ਦਿਨ")], "mr-IN": [("दिवसांत", "दिवसात")],
+    "ta-IN": [("நாட்களில்", "நாளில்"), ("நாட்களாக", "நாளாக"), ("நாட்கள்", "நாள்")],
+    "te-IN": [("రోజుల్లో", "రోజులో"), ("రోజులుగా", "రోజుగా"), ("రోజులు", "రోజు")], "kn-IN": [("ದಿನಗಳಲ್ಲಿ", "ದಿನದಲ್ಲಿ")],
+}
+
+
+def one_day(lang: str, text: str) -> str:
+    """Fix the grammar of a sentence that says '1 <days>' (only the day word right after the digit 1 changes)."""
+    for old, new in _ONE_DAY.get(lang, []):
+        text = re.sub(r"(?<![\d.])1 " + re.escape(old), "1 " + new, text)
+    return text
+
+
 def t(lang: str, key: str, **kw) -> str:
     """Translate `key` into `lang`, falling back to English, then to the key itself."""
     s = TEXT.get(lang, TEXT["en-IN"]).get(key) or TEXT["en-IN"].get(key) or key
     try:
-        return s.format(**kw) if kw else s
+        out = s.format(**kw) if kw else s
     except (KeyError, IndexError):
         return s
+    return one_day(lang, out) if kw.get("n") == 1 else out
 
 
 def state_name(state: str, lang: str) -> str:

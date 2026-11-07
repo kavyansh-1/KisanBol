@@ -8,6 +8,7 @@ from datetime import datetime
 import altair as alt
 import pandas as pd
 import streamlit as st
+from streamlit_geolocation import streamlit_geolocation
 
 import advisor
 import audio_utils
@@ -26,7 +27,7 @@ VERDICT_KEY = {"SELL NOW": ("v-sell", "verdict.sell"), "HOLD": ("v-hold", "verdi
 SCENARIOS = {"live": None, "rain": "rainy", "clear": "clear"}
 INK, AMBER, RED, GREEN = "#14213D", "#FFB703", "#C62828", "#2E7D4F"
 for key, default in (("history", []), ("context", None), ("result", None), ("error", None), ("lang", "en-IN"),
-                     ("res_lang", None), ("fresh", False), ("chat", []), ("chat_q", "")):
+                     ("res_lang", None), ("fresh", False), ("chat", []), ("chat_q", ""), ("res_view", None), ("res_loc", None)):
     st.session_state.setdefault(key, default)
 
 
@@ -62,6 +63,18 @@ def money(n: int) -> str:
     return words
 
 
+def _location():
+    """(lat, lon) if the farmer tapped the pin and allowed it, else None. The widget keeps its value between runs."""
+    v = st.session_state.get("loc")
+    if isinstance(v, dict) and v.get("latitude") is not None and v.get("longitude") is not None:
+        return float(v["latitude"]), float(v["longitude"])
+    return None
+
+
+def _view():
+    return st.session_state.get("view_days_sel")  # None = the usual view (rain 3 days, price 7 days)
+
+
 def run(text=None, audio=None, name="query.wav", speak=None, fresh=True):
     """Run the engine once and keep everything needed to redraw the answer in any language."""
     speak = engine.gnani_configured("tts") if speak is None else speak
@@ -69,11 +82,11 @@ def run(text=None, audio=None, name="query.wav", speak=None, fresh=True):
         with st.spinner(T("thinking")):
             res = engine.run_pipeline(audio=audio, text=text, language=lang, filename=name, speak=speak,
                                       weather_scenario=SCENARIOS.get(st.session_state.get("weather_mode", "live")),
-                                      context=st.session_state["context"])
+                                      context=st.session_state["context"], location=_location(), view_days=_view())
     except engine.KisanBolError as exc:
         st.session_state["error"], st.session_state["result"] = exc.localized(lang), None
         return
-    st.session_state.update(result=res, error=None, res_lang=lang, fresh=fresh)
+    st.session_state.update(result=res, error=None, res_lang=lang, fresh=fresh, res_view=_view(), res_loc=_location())
     if res.price:
         st.session_state["context"] = res.entities
         st.session_state["history"].insert(0, {"time": datetime.now().strftime("%H:%M"), "q": res.transcript,
@@ -83,7 +96,10 @@ def run(text=None, audio=None, name="query.wav", speak=None, fresh=True):
 
 # answer language follows the selected language: redraw the last answer when it changes
 prev = st.session_state["result"]
-if prev and st.session_state["res_lang"] != lang and prev.transcript:
+# the same for a new day window, and for a location shared after a question that had no mandi
+if prev and prev.transcript and (
+        st.session_state["res_lang"] != lang or st.session_state["res_view"] != _view()
+        or (st.session_state["res_loc"] != _location() and (prev.needs_clarification or prev.location_info))):
     run(text=prev.transcript, fresh=False)
 
 # ------------------------------------------------------------------ hero
@@ -149,6 +165,19 @@ with st.container(key="askpanel"):
             if st.form_submit_button(T("go"), type="primary", use_container_width=True):
                 request = {"text": typed}
 
+    lc_text, lc_btn = st.columns([9, 1])
+    with lc_btn:
+        streamlit_geolocation()
+    with lc_text:
+        _loc = _location()
+        if _loc:
+            _near, _km, _close = engine.nearest_mandi(*_loc)
+            st.caption("📍 " + T("loc.on" if _close else "loc.far", mandi=engine.mandi_name(_near, lang), km=_km))
+        else:
+            st.caption("📍 " + T("loc.hint"))
+    st.segmented_control(T("view.days"), [1, 3, 7], selection_mode="single", key="view_days_sel", format_func=str)
+    st.caption(T("view.hint"))
+
     with st.expander(T("demo.title")):
         st.radio(T("demo.weather"), list(SCENARIOS), horizontal=True, key="weather_mode",
                  format_func=lambda k: T({"live": "demo.live", "rain": "demo.rain", "clear": "demo.clear"}[k]))
@@ -206,6 +235,9 @@ elif res:
       f'<div class="bub bot"><small>{esc(T("bot"))}</small>{esc(res.advice_text)}</div></div>')
     if res.audio:
         st.audio(res.audio, format="audio/wav", autoplay=bool(st.session_state["fresh"]))
+    if res.location_info:
+        li = res.location_info
+        st.caption("📍 " + T("loc.used" if li["used"] else "loc.far", mandi=engine.mandi_name(li["mandi"], lang), km=li["km"]))
     if res.used_context:
         what = T("and").join(T("w." + w) for w in res.used_context)
         st.caption(T("filled", what=what))
@@ -228,7 +260,7 @@ elif res:
         pad = max((hi - lo) * 0.35, hi * 0.01)
         with c_left.container(border=True):
             badge = ("b-live", T("badge.live")) if ins.trend_source == "live" else ("b-demo", T("badge.demo"))
-            H(f'<h3 style="margin:0">{esc(T("chart.price", n=len(ins.trend)))}<span class="badge {badge[0]}">{esc(badge[1])}</span></h3>'
+            H(f'<h3 style="margin:0">{esc(T("chart.price", n=ins.price_days))}<span class="badge {badge[0]}">{esc(badge[1])}</span></h3>'
               f'<p class="sub" style="margin:0">{esc(T("chart.price_sub", mandi=mandi_local))}</p>')
             df = pd.DataFrame(ins.trend)
             df["label"] = [i18n.day_month(datetime.strptime(d, "%Y-%m-%d"), lang) for d in df["date"]]

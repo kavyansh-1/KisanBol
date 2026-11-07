@@ -2,3 +2,4 @@ streamlit>=1.40
 requests
 python-dotenv
 imageio-ffmpeg
+streamlit-geolocation
